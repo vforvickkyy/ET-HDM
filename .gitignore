@@ -1,0 +1,8 @@
+/build*/
+/out/
+/work/
+/fixtures/
+*.img
+*.iso
+*.dmg
+__pycache__/

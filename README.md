@@ -12,21 +12,35 @@ It replaces Eastape's dependency on Paragon HFS+ for Windows.
 
 | Phase | Name | Status |
 |---|---|---|
-| 1 | Research and source inspection | **Complete, awaiting approval** |
-| 2 | HFS+ filesystem engine | Not started |
+| 1 | Research and source inspection | Complete |
+| 2 | HFS+ filesystem engine | **In progress:** read path working and tested ([progress report](docs/phase-2-progress-report.md)) |
 | 3 | Windows mounting | Not started |
 | 4 | Drive management | Not started |
 | 5 | Desktop application | Not started |
 | 6 | Installer | Not started |
 | 7 | Testing and release | Not started |
 
-No application code exists yet. Per the project rules, coding starts only after
-the Phase 1 report is approved.
+Read/write support (Paragon parity) is planned as a second track after the
+read-only v1. See the progress report, section 5.
+
+## Quick start (engine tool)
+
+```bash
+cmake -S . -B build && cmake --build build -j
+build/tools/ehfs-cli/ehfs scan drive.img
+build/tools/ehfs-cli/ehfs ls -R drive.img /
+```
+
+On Windows, `ehfs.exe scan \\.\PhysicalDrive2` reads a real drive (run as
+administrator). Details: [docs/building.md](docs/building.md).
 
 ## Documents
 
 - [Phase 1 feasibility report](docs/phase-1-feasibility-report.md): what was
   inspected, what was selected and why, risks, and the Phase 2 plan
+- [Phase 2 progress report](docs/phase-2-progress-report.md): engine status,
+  test results, bugs found, read/write track
+- [Building and testing](docs/building.md)
 - [Architecture](docs/architecture.md): components, interfaces and the
   read-only safety model
 - [Third-party licenses](docs/third-party-licenses.md): every planned

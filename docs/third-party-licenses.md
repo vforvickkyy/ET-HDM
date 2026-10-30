@@ -1,8 +1,9 @@
 # Third-Party Components and Licenses
 
-Status: Phase 1 review of **planned** dependencies. Nothing is vendored yet.
-Each entry is re-checked against the exact files when it is added to the repo,
-and this table is updated with the pinned version.
+Status: hfsfuse libraries **vendored** at upstream commit `eed780c` in
+`engine/third_party/hfsfuse/` (license files included, changes listed in
+`EASTAPE-PATCHES.md`). Other entries are still planned and are re-checked
+against the exact files when added.
 
 This is an engineering review, not legal advice.
 
@@ -40,11 +41,15 @@ this file, especially the WinFsp row.
 | Visual Studio Community / Build Tools | Free for small organisations; larger enterprises need paid editions (check Microsoft's terms) | Alternative: build in GitHub Actions Windows runners. |
 | HFSExplorer | GPL-3.0 | Only used as an independent cross-check during testing. Not linked or shipped. |
 | libfshfs (libyal) | LGPL-3.0-or-later | Possible second cross-check reader in tests. Not shipped. |
-| dfvfs test images | Apache-2.0 | Small macOS-made HFS+/APM/APFS images used as test fixtures. |
+| dfvfs test images | Apache-2.0 | Small macOS-made HFS+/APM/APFS images used as test fixtures. Downloaded at test time (pinned commit, SHA-256 checked), not stored in the repo. |
+| hfsprogs (`mkfs.hfsplus`, `fsck.hfsplus`), xorriso | APSL-2.0 / GPL-3.0 | Linux tools that generate test images in CI. Not linked or shipped. |
+| Apple `hfs` / `livefiles_hfs_plugin` | APSL-2.0 | Candidate base for the read/write engine (spike pending). Internal use: no obligations. External distribution: publish source of modified Apple files. |
 
 ## Explicitly not used
 
 - Paragon or any other commercial filesystem SDK (project rule 3 and 4).
 - Apple Boot Camp HFS+ drivers: licensed for Apple hardware only.
 - Linux kernel `hfsplus` (GPL-2.0, kernel code): reference reading only.
-- Apple `hfs` kernel sources (APSL-2.0): format reference only.
+- Apple `hfs` kernel-extension sources (APSL-2.0): format reference only. The
+  separate user-space plugin from the same project is the read/write candidate
+  listed above.
