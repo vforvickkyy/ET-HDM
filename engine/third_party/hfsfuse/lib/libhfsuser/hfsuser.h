@@ -61,7 +61,17 @@ struct hfs_volume_config {
 	uint32_t default_uid, default_gid;
 
 	int disable_symlinks;
+
+	// Eastape HFS patch: optional caller-provided block reader. When io_read is set, the device
+	// name given to hfs_open_volume is only used in messages and no file is opened by libhfsuser.
+	// Offsets are relative to the start of the HFS+ volume. Returns 0 or a negative errno value.
+	void* io_ctx;
+	int (*io_read)(void* io_ctx, void* buf, uint64_t length, uint64_t offset);
 };
+
+// Eastape HFS patch: route libhfs/libhfsuser error messages to a caller-provided function
+// instead of stderr. Pass NULL to restore the default.
+void hfs_set_error_handler(void (*handler)(const char* message, void* ctx), void* ctx);
 
 // HFS+ compression support
 struct hfs_decmpfs_header {

@@ -1,0 +1,225 @@
+--- a/lib/libhfs/libhfs.c
++++ b/lib/libhfs/libhfs.c
+@@ -599,6 +599,7 @@
+ 		HFS_LIBERR("could not locate fork extents");
+ 
+ 	curnode = in_vol->chr.root_node;
++	uint32_t nodes_visited = 0;	/* Eastape HFS patch: loop guard */
+ 
+ #ifdef DLO_DEBUG
+ 	printf("-> key ");
+@@ -610,6 +611,8 @@
+ #ifdef DLO_DEBUG
+ 		printf("--> node %d\n", curnode);
+ #endif
++		if (++nodes_visited > in_vol->chr.total_nodes)
++			HFS_LIBERR("catalog B-tree is corrupt (cycle during lookup)");
+ 
+ 		if (hfslib_readd_with_extents(in_vol, buffer, 
+ 			&bytesread,in_vol->chr.node_size, curnode * in_vol->chr.node_size, 
+@@ -675,6 +678,8 @@
+ 			curnode = out_rec->child;
+ 		else if (nd.kind == HFS_LEAFNODE)
+ 			break;
++		else	/* Eastape HFS patch: a header/map node here would loop forever */
++			HFS_LIBERR("unexpected catalog node kind %d in node #%u", nd.kind, curnode);
+ 		hfslib_free_recs(&recs, &recsizes, &nd.num_recs, cbargs);
+ 	} while (nd.kind != HFS_LEAFNODE);
+ 
+@@ -733,11 +738,15 @@
+ 
+ 	nd.num_recs = 0;
+ 	curnode = in_vol->ehr.root_node;
++	uint32_t nodes_visited = 0;	/* Eastape HFS patch: loop guard */
+ 
+ 	do {
+ 		hfslib_free_recs(&recs, &recsizes, &nd.num_recs, cbargs);
+ 		recnum = 0;
+ 
++		if (++nodes_visited > in_vol->ehr.total_nodes)
++			HFS_LIBERR("extents overflow B-tree is corrupt (cycle during lookup)");
++
+ 		if (hfslib_readd_with_extents(in_vol, buffer, &bytesread, 
+ 			in_vol->ehr.node_size, curnode * in_vol->ehr.node_size, extents, 
+ 			numextents, cbargs) != 0)
+@@ -1418,12 +1427,16 @@
+ 
+ 	nd.num_recs = 0;
+ 	curnode = in_vol->chr.root_node;
++	uint32_t nodes_visited = 0;	/* Eastape HFS patch: loop guard */
+ 
+ 	while (1)
+ 	{
+ 		hfslib_free_recs(&recs, &recsizes, &nd.num_recs, cbargs);
+ 		recnum = 0;
+ 
++		if (++nodes_visited > in_vol->chr.total_nodes)
++			HFS_LIBERR("catalog B-tree is corrupt (cycle while listing CNID %u)", in_dir);
++
+ 		if (hfslib_readd_with_extents(in_vol, buffer, &bytesread, 
+ 			in_vol->chr.node_size, curnode * in_vol->chr.node_size, extents, 
+ 			numextents, cbargs) != 0)
+@@ -1466,9 +1479,14 @@
+ 					 * still go back to the previously found leaf node and start
+ 					 * checking it for a possible prior instance of an object
+ 					 * with our desired parent cnid.
++					 *
++					 * Eastape HFS patch: on the first record of a node, lastnode
++					 * still refers to the level above. The first key with a given
++					 * parent cnid is the folder's own thread record, so it starts
++					 * this record's child node: descend there.
+ 					 */
+-					curnode = lastnode;
+-					break;					 
++					curnode = (recnum == 0) ? currec.child : lastnode;
++					break;
+ 				} else if (recnum == nd.num_recs-1 && keycompare > 0) {
+ 					/* Descend to child node if we found an exact match, or if
+ 					 * this is the last pointer record. */
+@@ -1534,6 +1552,18 @@
+ 				}
+ 			}
+ 		}
++
++		/*
++		 * Eastape HFS patch: when the folder's records run to the end of the
++		 * last leaf node, flink is 0. Without this check node 0 (the header
++		 * node) was read again forever. Also covers empty leaf nodes.
++		 */
++		if (nd.kind == HFS_LEAFNODE) {
++			curnode = nd.flink;
++			if (curnode == 0)
++				break;
++		} else if (nd.kind != HFS_INDEXNODE)
++			HFS_LIBERR("unexpected catalog node kind %d in node #%u", nd.kind, curnode);
+ 	}
+ 
+ 	result = 0;
+--- a/lib/libhfsuser/hfsuser.c
++++ b/lib/libhfsuser/hfsuser.c
+@@ -62,6 +62,9 @@
+ 	void* read_buf;
+ 	pthread_mutex_t read_mutex;
+ 	bool disable_symlinks;
++	// Eastape HFS patch: caller-provided reader, see struct hfs_volume_config
++	void* io_ctx;
++	int (*io_read)(void* io_ctx, void* buf, uint64_t length, uint64_t offset);
+ #ifdef HAVE_UBLIO
+ 	bool use_ublio;
+ 	ublio_filehandle_t ubfh;
+@@ -571,12 +574,19 @@
+ 	if(cbargs && cbargs->openvol)
+ 		cfg = *(struct hfs_volume_config*)cbargs->openvol;
+ 
+-	int open_flags = O_RDONLY;
++	dev->fd = -1;
++	if(cfg.io_read) {
++		dev->io_ctx = cfg.io_ctx;
++		dev->io_read = cfg.io_read;
++	}
++	else {
++		int open_flags = O_RDONLY;
+ #ifdef _WIN32
+-	open_flags |= O_BINARY;
++		open_flags |= O_BINARY;
+ #endif
+-	if((dev->fd = open(name,open_flags)) < 0)
+-		BAIL(errno);
++		if((dev->fd = open(name,open_flags)) < 0)
++			BAIL(errno);
++	}
+ 
+ 	dev->default_fork = cfg.rsrc_only ? HFS_RSRCFORK : HFS_DATAFORK;
+ 	if(cfg.rsrc_suff) {
+@@ -587,7 +597,7 @@
+ 
+ 	if(cfg.blksize)
+ 		dev->blksize = cfg.blksize;
+-	else {
++	else if(!dev->io_read) {
+ 		struct stat st;
+ 		if(fstat(dev->fd, &st))
+ 			BAIL(errno);
+@@ -626,7 +636,7 @@
+ 	dev->disable_symlinks = cfg.disable_symlinks;
+ 
+ #ifdef HAVE_UBLIO
+-	dev->use_ublio = !cfg.noublio;
++	dev->use_ublio = !cfg.noublio && !dev->io_read;
+ 	if(dev->use_ublio) {
+ 		struct ublio_param p = {
+ 			.up_priv = &dev->fd,
+@@ -647,7 +657,7 @@
+ 	}
+ 	else
+ #endif
+-	if(dev->blksize) {
++	if(dev->blksize && !dev->io_read) {
+ 		if(!(dev->read_buf = malloc(dev->blksize)))
+ 			BAIL(ENOMEM);
+ 		if((err = pthread_mutex_init(&dev->read_mutex,NULL)))
+@@ -767,6 +777,10 @@
+ 	struct hfs_device* dev = vol->cbdata;
+ 	offset += vol->offset;
+ 	int ret;
++	if(dev->io_read) {
++		ret = dev->io_read(dev->io_ctx, outbytes, length, offset);
++		goto end;
++	}
+ #ifdef HAVE_UBLIO
+ 	if(dev->use_ublio) {
+ 		ret = hfs_read_ublio(dev, outbytes, length, offset);
+@@ -775,9 +789,7 @@
+ #endif
+ 	ret = hfs_read_pread(dev, outbytes, length, offset);
+ 
+-#ifdef HAVE_UBLIO
+ end:
+-#endif
+ 	if(ret)
+ 		hfslib_error("read of %" PRIu64 " bytes at offset %" PRIu64 " failed (block size %" PRIu32 "): %s",
+ 		             NULL, 0, length, offset, dev->blksize, strerror(-ret));
+@@ -789,4 +801,21 @@
+ void* hfs_realloc(void* data, size_t size, hfs_callback_args* cbargs) { return size ? realloc(data,size) : NULL; }
+ void  hfs_free(void* data, hfs_callback_args* cbargs) { free(data); }
+ 
+-void  hfs_vprintf(const char* fmt, const char* file, int line, va_list args) { vfprintf(stderr,fmt,args); putc('\n',stderr); }
++// Eastape HFS patch: optional error handler, see hfs_set_error_handler
++static void (*hfs_error_handler)(const char*, void*);
++static void* hfs_error_handler_ctx;
++
++void hfs_set_error_handler(void (*handler)(const char* message, void* ctx), void* ctx) {
++	hfs_error_handler = handler;
++	hfs_error_handler_ctx = ctx;
++}
++
++void  hfs_vprintf(const char* fmt, const char* file, int line, va_list args) {
++	if(hfs_error_handler) {
++		char message[1024];
++		vsnprintf(message, sizeof(message), fmt, args);
++		hfs_error_handler(message, hfs_error_handler_ctx);
++		return;
++	}
++	vfprintf(stderr,fmt,args); putc('\n',stderr);
++}
+--- a/lib/libhfsuser/hfsuser.h
++++ b/lib/libhfsuser/hfsuser.h
+@@ -61,8 +61,18 @@
+ 	uint32_t default_uid, default_gid;
+ 
+ 	int disable_symlinks;
++
++	// Eastape HFS patch: optional caller-provided block reader. When io_read is set, the device
++	// name given to hfs_open_volume is only used in messages and no file is opened by libhfsuser.
++	// Offsets are relative to the start of the HFS+ volume. Returns 0 or a negative errno value.
++	void* io_ctx;
++	int (*io_read)(void* io_ctx, void* buf, uint64_t length, uint64_t offset);
+ };
+ 
++// Eastape HFS patch: route libhfs/libhfsuser error messages to a caller-provided function
++// instead of stderr. Pass NULL to restore the default.
++void hfs_set_error_handler(void (*handler)(const char* message, void* ctx), void* ctx);
++
+ // HFS+ compression support
+ struct hfs_decmpfs_header {
+ 	uint8_t type;

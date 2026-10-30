@@ -599,6 +599,7 @@ hfslib_find_catalog_record_with_key(
 		HFS_LIBERR("could not locate fork extents");
 
 	curnode = in_vol->chr.root_node;
+	uint32_t nodes_visited = 0;	/* Eastape HFS patch: loop guard */
 
 #ifdef DLO_DEBUG
 	printf("-> key ");
@@ -610,6 +611,8 @@ hfslib_find_catalog_record_with_key(
 #ifdef DLO_DEBUG
 		printf("--> node %d\n", curnode);
 #endif
+		if (++nodes_visited > in_vol->chr.total_nodes)
+			HFS_LIBERR("catalog B-tree is corrupt (cycle during lookup)");
 
 		if (hfslib_readd_with_extents(in_vol, buffer, 
 			&bytesread,in_vol->chr.node_size, curnode * in_vol->chr.node_size, 
@@ -675,6 +678,8 @@ hfslib_find_catalog_record_with_key(
 			curnode = out_rec->child;
 		else if (nd.kind == HFS_LEAFNODE)
 			break;
+		else	/* Eastape HFS patch: a header/map node here would loop forever */
+			HFS_LIBERR("unexpected catalog node kind %d in node #%u", nd.kind, curnode);
 		hfslib_free_recs(&recs, &recsizes, &nd.num_recs, cbargs);
 	} while (nd.kind != HFS_LEAFNODE);
 
@@ -733,10 +738,14 @@ hfslib_find_extent_record_with_key(hfs_volume* in_vol,
 
 	nd.num_recs = 0;
 	curnode = in_vol->ehr.root_node;
+	uint32_t nodes_visited = 0;	/* Eastape HFS patch: loop guard */
 
 	do {
 		hfslib_free_recs(&recs, &recsizes, &nd.num_recs, cbargs);
 		recnum = 0;
+
+		if (++nodes_visited > in_vol->ehr.total_nodes)
+			HFS_LIBERR("extents overflow B-tree is corrupt (cycle during lookup)");
 
 		if (hfslib_readd_with_extents(in_vol, buffer, &bytesread, 
 			in_vol->ehr.node_size, curnode * in_vol->ehr.node_size, extents, 
@@ -1418,11 +1427,15 @@ hfslib_get_directory_contents(
 
 	nd.num_recs = 0;
 	curnode = in_vol->chr.root_node;
+	uint32_t nodes_visited = 0;	/* Eastape HFS patch: loop guard */
 
 	while (1)
 	{
 		hfslib_free_recs(&recs, &recsizes, &nd.num_recs, cbargs);
 		recnum = 0;
+
+		if (++nodes_visited > in_vol->chr.total_nodes)
+			HFS_LIBERR("catalog B-tree is corrupt (cycle while listing CNID %u)", in_dir);
 
 		if (hfslib_readd_with_extents(in_vol, buffer, &bytesread, 
 			in_vol->chr.node_size, curnode * in_vol->chr.node_size, extents, 
@@ -1466,9 +1479,14 @@ hfslib_get_directory_contents(
 					 * still go back to the previously found leaf node and start
 					 * checking it for a possible prior instance of an object
 					 * with our desired parent cnid.
+					 *
+					 * Eastape HFS patch: on the first record of a node, lastnode
+					 * still refers to the level above. The first key with a given
+					 * parent cnid is the folder's own thread record, so it starts
+					 * this record's child node: descend there.
 					 */
-					curnode = lastnode;
-					break;					 
+					curnode = (recnum == 0) ? currec.child : lastnode;
+					break;
 				} else if (recnum == nd.num_recs-1 && keycompare > 0) {
 					/* Descend to child node if we found an exact match, or if
 					 * this is the last pointer record. */
@@ -1534,6 +1552,18 @@ hfslib_get_directory_contents(
 				}
 			}
 		}
+
+		/*
+		 * Eastape HFS patch: when the folder's records run to the end of the
+		 * last leaf node, flink is 0. Without this check node 0 (the header
+		 * node) was read again forever. Also covers empty leaf nodes.
+		 */
+		if (nd.kind == HFS_LEAFNODE) {
+			curnode = nd.flink;
+			if (curnode == 0)
+				break;
+		} else if (nd.kind != HFS_INDEXNODE)
+			HFS_LIBERR("unexpected catalog node kind %d in node #%u", nd.kind, curnode);
 	}
 
 	result = 0;

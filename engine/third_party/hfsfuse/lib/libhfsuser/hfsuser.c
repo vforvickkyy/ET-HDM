@@ -62,6 +62,9 @@ struct hfs_device {
 	void* read_buf;
 	pthread_mutex_t read_mutex;
 	bool disable_symlinks;
+	// Eastape HFS patch: caller-provided reader, see struct hfs_volume_config
+	void* io_ctx;
+	int (*io_read)(void* io_ctx, void* buf, uint64_t length, uint64_t offset);
 #ifdef HAVE_UBLIO
 	bool use_ublio;
 	ublio_filehandle_t ubfh;
@@ -571,12 +574,19 @@ int hfs_open(hfs_volume* vol, const char* name, hfs_callback_args* cbargs) {
 	if(cbargs && cbargs->openvol)
 		cfg = *(struct hfs_volume_config*)cbargs->openvol;
 
-	int open_flags = O_RDONLY;
+	dev->fd = -1;
+	if(cfg.io_read) {
+		dev->io_ctx = cfg.io_ctx;
+		dev->io_read = cfg.io_read;
+	}
+	else {
+		int open_flags = O_RDONLY;
 #ifdef _WIN32
-	open_flags |= O_BINARY;
+		open_flags |= O_BINARY;
 #endif
-	if((dev->fd = open(name,open_flags)) < 0)
-		BAIL(errno);
+		if((dev->fd = open(name,open_flags)) < 0)
+			BAIL(errno);
+	}
 
 	dev->default_fork = cfg.rsrc_only ? HFS_RSRCFORK : HFS_DATAFORK;
 	if(cfg.rsrc_suff) {
@@ -587,7 +597,7 @@ int hfs_open(hfs_volume* vol, const char* name, hfs_callback_args* cbargs) {
 
 	if(cfg.blksize)
 		dev->blksize = cfg.blksize;
-	else {
+	else if(!dev->io_read) {
 		struct stat st;
 		if(fstat(dev->fd, &st))
 			BAIL(errno);
@@ -626,7 +636,7 @@ int hfs_open(hfs_volume* vol, const char* name, hfs_callback_args* cbargs) {
 	dev->disable_symlinks = cfg.disable_symlinks;
 
 #ifdef HAVE_UBLIO
-	dev->use_ublio = !cfg.noublio;
+	dev->use_ublio = !cfg.noublio && !dev->io_read;
 	if(dev->use_ublio) {
 		struct ublio_param p = {
 			.up_priv = &dev->fd,
@@ -647,7 +657,7 @@ int hfs_open(hfs_volume* vol, const char* name, hfs_callback_args* cbargs) {
 	}
 	else
 #endif
-	if(dev->blksize) {
+	if(dev->blksize && !dev->io_read) {
 		if(!(dev->read_buf = malloc(dev->blksize)))
 			BAIL(ENOMEM);
 		if((err = pthread_mutex_init(&dev->read_mutex,NULL)))
@@ -767,6 +777,10 @@ int hfs_read(hfs_volume* vol, void* outbytes, uint64_t length, uint64_t offset, 
 	struct hfs_device* dev = vol->cbdata;
 	offset += vol->offset;
 	int ret;
+	if(dev->io_read) {
+		ret = dev->io_read(dev->io_ctx, outbytes, length, offset);
+		goto end;
+	}
 #ifdef HAVE_UBLIO
 	if(dev->use_ublio) {
 		ret = hfs_read_ublio(dev, outbytes, length, offset);
@@ -775,9 +789,7 @@ int hfs_read(hfs_volume* vol, void* outbytes, uint64_t length, uint64_t offset, 
 #endif
 	ret = hfs_read_pread(dev, outbytes, length, offset);
 
-#ifdef HAVE_UBLIO
 end:
-#endif
 	if(ret)
 		hfslib_error("read of %" PRIu64 " bytes at offset %" PRIu64 " failed (block size %" PRIu32 "): %s",
 		             NULL, 0, length, offset, dev->blksize, strerror(-ret));
@@ -789,4 +801,21 @@ void* hfs_malloc(size_t size, hfs_callback_args* cbargs) { return malloc(size); 
 void* hfs_realloc(void* data, size_t size, hfs_callback_args* cbargs) { return size ? realloc(data,size) : NULL; }
 void  hfs_free(void* data, hfs_callback_args* cbargs) { free(data); }
 
-void  hfs_vprintf(const char* fmt, const char* file, int line, va_list args) { vfprintf(stderr,fmt,args); putc('\n',stderr); }
+// Eastape HFS patch: optional error handler, see hfs_set_error_handler
+static void (*hfs_error_handler)(const char*, void*);
+static void* hfs_error_handler_ctx;
+
+void hfs_set_error_handler(void (*handler)(const char* message, void* ctx), void* ctx) {
+	hfs_error_handler = handler;
+	hfs_error_handler_ctx = ctx;
+}
+
+void  hfs_vprintf(const char* fmt, const char* file, int line, va_list args) {
+	if(hfs_error_handler) {
+		char message[1024];
+		vsnprintf(message, sizeof(message), fmt, args);
+		hfs_error_handler(message, hfs_error_handler_ctx);
+		return;
+	}
+	vfprintf(stderr,fmt,args); putc('\n',stderr);
+}
