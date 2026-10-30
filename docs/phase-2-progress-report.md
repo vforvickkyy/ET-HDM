@@ -49,8 +49,10 @@ optional >4 GiB file test).
 **Windows build.** Cross-compiled with MinGW-w64, no warnings. Run under Wine
 (Windows API layer on Linux), `ehfs.exe` passes the same file-content checks on
 the APM, GPT, GPT-4K and MBR images, plus non-English path arguments and dirty
-journal refusal. The CI workflow repeats this on a real Windows Server runner
-for every push.
+journal refusal. The CI workflow repeats this on a real Windows Server 2022
+runner for every push. It passed on GitHub Actions (run 41025651182): Linux
+suite green, and the natively built `ehfs.exe` matched all 2,017 files on every
+image.
 
 **Not yet tested:** reading a real physical drive (`\\.\PhysicalDriveN`) on a
 real Windows PC. This needs Eastape hardware. Instructions are in
