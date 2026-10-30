@@ -16,7 +16,7 @@ set -u
 export LC_ALL=C.UTF-8 LANG=C.UTF-8
 
 EHFS_BIN=$(realpath "${1:?path to ehfs}")
-WORK=${2:?work directory}
+mkdir -p "${2:?work directory}" && WORK=$(cd "$2" && pwd)
 FIX=$(cd "$(dirname "$0")/../fixtures" && pwd)
 
 # every engine call is time-limited: a hang is a failure, never a stuck test run

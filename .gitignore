@@ -6,3 +6,4 @@
 *.iso
 *.dmg
 __pycache__/
+*.ehfs-timeout
